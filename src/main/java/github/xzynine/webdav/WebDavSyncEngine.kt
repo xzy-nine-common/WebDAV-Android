@@ -148,7 +148,7 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = remoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailure(throwable, localPath)
+                val (kind, message) = classifyFailureInternal(throwable, localPath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -245,7 +245,7 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = refreshedRemoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailure(throwable, localPath)
+                val (kind, message) = classifyFailureInternal(throwable, localPath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -278,7 +278,7 @@ class WebDavSyncEngine(private val context: Context) {
                 remote.upload(bytes, contentType)
                 SyncOutcome(result = SyncResult.SUCCESS)
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailure(throwable, null)
+                val (kind, message) = classifyFailureInternal(throwable, null)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -423,9 +423,25 @@ class WebDavSyncEngine(private val context: Context) {
     }
 
     /**
+     * 将异常归类为同步失败结果，供调用方 catch 场景使用
+     *
+     * @param throwable 待归类的异常
+     * @param localPath 本地定位（文件路径或 content:// Uri），用于权限类错误判定
+     * @return 失败结果
+     */
+    fun classifyFailure(throwable: Throwable, localPath: String? = null): SyncOutcome {
+        val (kind, message) = classifyFailureInternal(throwable, localPath)
+        return SyncOutcome(
+            result = SyncResult.FAILED,
+            errorKind = kind,
+            errorMessage = message
+        )
+    }
+
+    /**
      * 将异常归类为结构化失败类型
      */
-    private fun classifyFailure(throwable: Throwable, localPath: String?): Pair<SyncFailureKind, String?> {
+    private fun classifyFailureInternal(throwable: Throwable, localPath: String?): Pair<SyncFailureKind, String?> {
         val isUriPath = !localPath.isNullOrBlank() && asContentUri(localPath) != null
         val kind = when {
             isUriPath && isPermissionIssue(throwable) -> SyncFailureKind.PERMISSION

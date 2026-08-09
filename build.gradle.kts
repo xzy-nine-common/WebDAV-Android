@@ -60,6 +60,10 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
     implementation(libs.compose.runtime)
+    // 文件图标支持
+    implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    // ActivityResult 上传/下载支持
+    implementation(libs.activity.compose)
     implementation(libs.miuix.android)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)

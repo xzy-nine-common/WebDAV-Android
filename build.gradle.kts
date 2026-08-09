@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -61,6 +62,7 @@ dependencies {
     implementation(libs.compose.runtime)
     implementation(libs.miuix.android)
     implementation(libs.miuix.icons)
+    implementation(libs.miuix.preference)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

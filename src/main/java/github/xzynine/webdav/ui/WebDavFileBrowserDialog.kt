@@ -22,7 +22,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Archive
@@ -35,6 +34,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,9 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,9 +65,9 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
+import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import java.net.URLEncoder
 import java.text.Collator
 
@@ -130,6 +127,8 @@ private const val LOG_TAG = "tag:WebDAV-UI"
  *
  * 选择结果以相对路径回调，由调用方自行拼接完整远程地址。
  *
+ * 打开时使用传入的账号信息自动连接并加载 [initialDirectory]，连接失败时在浏览视图内展示错误提示。
+ *
  * @param initialServerUrl 初始服务器地址
  * @param initialUsername 初始用户名
  * @param initialPassword 初始密码
@@ -159,10 +158,8 @@ fun WebDavFileBrowserDialog(
     var serverUrl by remember { mutableStateOf(initialServerUrl) }
     var username by remember { mutableStateOf(initialUsername) }
     var password by remember { mutableStateOf(initialPassword) }
-    var accountPasswordVisible by remember { mutableStateOf(false) }
 
     // 浏览状态
-    var isConnected by remember { mutableStateOf(false) }
     var currentDirectory by remember { mutableStateOf(initialDirectory.trim().trim('/')) }
     var entries by remember { mutableStateOf<List<WebDavFileEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
@@ -278,7 +275,6 @@ fun WebDavFileBrowserDialog(
             }.let { raw ->
                 currentDirectory = normalizeRelativePath(relativeDirectory)
                 entries = raw
-                isConnected = true
             }
         } catch (e: Exception) {
             val msg = e.message.orEmpty()
@@ -383,39 +379,25 @@ fun WebDavFileBrowserDialog(
         }
     }
 
-    WindowDialog(
-        title = title,
-        summary = if (!isConnected) {
-            "输入账号信息后连接浏览"
-        } else {
-            "当前目录 /${normalizeRelativePath(currentDirectory)}"
-        },
+    // 打开即自动连接并加载初始目录，失败时由浏览视图展示错误提示
+    LaunchedEffect(Unit) {
+        loadDirectory(initialDirectory)
+    }
+
+    WindowBottomSheet(
         show = true,
+        title = title,
         onDismissRequest = onDismiss,
         defaultWindowInsetsPadding = true
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(500.dp)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             when {
-                !isConnected -> AccountView(
-                    serverUrl = serverUrl,
-                    username = username,
-                    password = password,
-                    accountPasswordVisible = accountPasswordVisible,
-                    working = working,
-                    onServerUrlChange = { serverUrl = it },
-                    onUsernameChange = { username = it },
-                    onPasswordChange = { password = it },
-                    onTogglePasswordVisible = { accountPasswordVisible = !accountPasswordVisible },
-                    onConnect = {
-                        coroutineScope.launch { loadDirectory(initialDirectory) }
-                    }
-                )
-
                 detailEntry != null -> DetailView(
                     entry = detailEntry!!,
                     working = working,
@@ -535,64 +517,6 @@ fun WebDavFileBrowserDialog(
                 )
             }
         }
-    }
-}
-
-/**
- * 账号连接视图
- */
-@Composable
-private fun AccountView(
-    serverUrl: String,
-    username: String,
-    password: String,
-    accountPasswordVisible: Boolean,
-    working: Boolean,
-    onServerUrlChange: (String) -> Unit,
-    onUsernameChange: (String) -> Unit,
-    onPasswordChange: (String) -> Unit,
-    onTogglePasswordVisible: () -> Unit,
-    onConnect: () -> Unit
-) {
-    TextField(
-        value = serverUrl,
-        onValueChange = onServerUrlChange,
-        label = "WebDAV地址",
-        useLabelAsPlaceholder = true,
-        singleLine = true
-    )
-    TextField(
-        value = username,
-        onValueChange = onUsernameChange,
-        label = "用户名",
-        useLabelAsPlaceholder = true,
-        singleLine = true
-    )
-    TextField(
-        value = password,
-        onValueChange = onPasswordChange,
-        label = "密码",
-        useLabelAsPlaceholder = true,
-        visualTransformation = if (accountPasswordVisible) {
-            VisualTransformation.None
-        } else {
-            PasswordVisualTransformation()
-        },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        singleLine = true
-    )
-    Button(
-        onClick = onTogglePasswordVisible,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(if (accountPasswordVisible) "隐藏密码" else "显示密码")
-    }
-    Button(
-        onClick = onConnect,
-        enabled = serverUrl.isNotBlank() && username.isNotBlank() && password.isNotBlank() && !working,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(if (working) "连接中..." else "连接并浏览")
     }
 }
 
@@ -812,7 +736,7 @@ private fun BrowseView(
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         BreadcrumbText(
-            text = "根",
+            text = "/",
             active = segments.isEmpty(),
             onClick = { onJumpTo("") }
         )
@@ -845,7 +769,7 @@ private fun BrowseView(
         }
         val dirOptions = listOf("升序", "降序")
         val dirIdx = if (sortDescending) 1 else 0
-        OverlayIconDropdownMenu(
+        WindowIconDropdownMenu(
             entries = listOf(
                 DropdownEntry(
                     items = sortOptions.mapIndexed { index, option ->
@@ -879,7 +803,7 @@ private fun BrowseView(
             Icon(imageVector = Icons.Rounded.Tune, contentDescription = "排序")
         }
 
-        OverlayIconDropdownMenu(
+        WindowIconDropdownMenu(
             entry = DropdownEntry(
                 items = listOf(
                     DropdownItem(

@@ -40,6 +40,27 @@ enum class SyncResult {
 }
 
 /**
+ * 文件缺失来源，用于区分远端/本地文件不存在，避免调用方依赖错误文案判断
+ */
+enum class FileAbsenceSource {
+
+    /**
+     * 非文件缺失类错误
+     */
+    NONE,
+
+    /**
+     * 远端文件缺失
+     */
+    REMOTE,
+
+    /**
+     * 本地文件缺失
+     */
+    LOCAL
+}
+
+/**
  * 同步失败类型，供调用方映射用户提示文案
  */
 enum class SyncFailureKind {
@@ -62,7 +83,22 @@ enum class SyncFailureKind {
     /**
      * 其他未知错误
      */
-    UNKNOWN
+    UNKNOWN;
+
+    companion object {
+
+        /**
+         * 将异常归类为失败类型（不含本地路径权限判定）。
+         */
+        fun of(throwable: Throwable): SyncFailureKind = when {
+            throwable is FileNotFoundException -> FILE_NOT_FOUND
+            throwable is UnknownHostException ||
+                throwable is SocketTimeoutException ||
+                throwable is ConnectException ||
+                throwable is SocketException -> NETWORK
+            else -> UNKNOWN
+        }
+    }
 }
 
 /**
@@ -71,12 +107,14 @@ enum class SyncFailureKind {
  * @param result 同步结果状态
  * @param errorKind 失败类型（仅失败时有效）
  * @param errorMessage 原始错误信息
+ * @param absenceSource 文件缺失来源（仅 FILE_NOT_FOUND 时有效）
  * @param remoteModifiedAt 远端文件修改时间
  */
 data class SyncOutcome(
     val result: SyncResult,
     val errorKind: SyncFailureKind = SyncFailureKind.UNKNOWN,
     val errorMessage: String? = null,
+    val absenceSource: FileAbsenceSource = FileAbsenceSource.NONE,
     val remoteModifiedAt: Long? = null
 ) {
     /**
@@ -134,7 +172,8 @@ class WebDavSyncEngine(private val context: Context) {
                     return@runCatching SyncOutcome(
                         result = SyncResult.FAILED,
                         errorKind = SyncFailureKind.FILE_NOT_FOUND,
-                        errorMessage = "远端文件不存在，无法下载"
+                        errorMessage = "远端文件不存在，无法下载",
+                        absenceSource = FileAbsenceSource.REMOTE
                     )
                 }
 
@@ -148,11 +187,12 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = remoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailureInternal(throwable, localPath)
+                val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
-                    errorMessage = message ?: "下载失败"
+                    errorMessage = message ?: "下载失败",
+                    absenceSource = absenceSource
                 )
             }
         }
@@ -187,7 +227,8 @@ class WebDavSyncEngine(private val context: Context) {
                     return@runCatching SyncOutcome(
                         result = SyncResult.FAILED,
                         errorKind = SyncFailureKind.FILE_NOT_FOUND,
-                        errorMessage = "本地数据库文件不存在或不可访问"
+                        errorMessage = "本地数据库文件不存在或不可访问",
+                        absenceSource = FileAbsenceSource.LOCAL
                     )
                 }
 
@@ -245,11 +286,12 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = refreshedRemoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailureInternal(throwable, localPath)
+                val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
-                    errorMessage = message ?: "上传失败"
+                    errorMessage = message ?: "上传失败",
+                    absenceSource = absenceSource
                 )
             }
         }
@@ -278,11 +320,12 @@ class WebDavSyncEngine(private val context: Context) {
                 remote.upload(bytes, contentType)
                 SyncOutcome(result = SyncResult.SUCCESS)
             }.getOrElse { throwable ->
-                val (kind, message) = classifyFailureInternal(throwable, null)
+                val (kind, message, absenceSource) = classifyFailureInternal(throwable, null)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
-                    errorMessage = message ?: "上传失败"
+                    errorMessage = message ?: "上传失败",
+                    absenceSource = absenceSource
                 )
             }
         }
@@ -413,16 +456,6 @@ class WebDavSyncEngine(private val context: Context) {
     }
 
     /**
-     * 判断是否为网络异常
-     */
-    private fun isNetworkIssue(throwable: Throwable): Boolean {
-        return throwable is UnknownHostException ||
-            throwable is SocketTimeoutException ||
-            throwable is ConnectException ||
-            throwable is SocketException
-    }
-
-    /**
      * 将异常归类为同步失败结果，供调用方 catch 场景使用
      *
      * @param throwable 待归类的异常
@@ -430,7 +463,23 @@ class WebDavSyncEngine(private val context: Context) {
      * @return 失败结果
      */
     fun classifyFailure(throwable: Throwable, localPath: String? = null): SyncOutcome {
-        val (kind, message) = classifyFailureInternal(throwable, localPath)
+        val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
+        return SyncOutcome(
+            result = SyncResult.FAILED,
+            errorKind = kind,
+            errorMessage = message,
+            absenceSource = absenceSource
+        )
+    }
+
+    /**
+     * 按结构化失败类型构造失败结果，供调用方 catch 场景使用
+     *
+     * @param kind 失败类型
+     * @param message 原始错误信息
+     * @return 失败结果
+     */
+    fun buildFailureOutcome(kind: SyncFailureKind, message: String?): SyncOutcome {
         return SyncOutcome(
             result = SyncResult.FAILED,
             errorKind = kind,
@@ -439,16 +488,22 @@ class WebDavSyncEngine(private val context: Context) {
     }
 
     /**
-     * 将异常归类为结构化失败类型
+     * 将异常归类为结构化失败类型与缺失来源
      */
-    private fun classifyFailureInternal(throwable: Throwable, localPath: String?): Pair<SyncFailureKind, String?> {
+    private fun classifyFailureInternal(
+        throwable: Throwable,
+        localPath: String?
+    ): Triple<SyncFailureKind, String?, FileAbsenceSource> {
         val isUriPath = !localPath.isNullOrBlank() && asContentUri(localPath) != null
         val kind = when {
             isUriPath && isPermissionIssue(throwable) -> SyncFailureKind.PERMISSION
-            throwable is FileNotFoundException -> SyncFailureKind.FILE_NOT_FOUND
-            isNetworkIssue(throwable) -> SyncFailureKind.NETWORK
-            else -> SyncFailureKind.UNKNOWN
+            else -> SyncFailureKind.of(throwable)
         }
-        return kind to throwable.message
+        val absenceSource = if (localPath != null && throwable is FileNotFoundException) {
+            FileAbsenceSource.LOCAL
+        } else {
+            FileAbsenceSource.NONE
+        }
+        return Triple(kind, throwable.message, absenceSource)
     }
 }

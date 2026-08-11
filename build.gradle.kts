@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -30,9 +29,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
-    // Compose 配置
     buildFeatures {
-        compose = true
+        compose = false
     }
 }
 
@@ -53,17 +51,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     // content:// Uri 定位支持
     implementation("androidx.documentfile:documentfile:1.0.1")
-    // Compose 与 Miuix UI 依赖
-    implementation(libs.compose.ui)
-    implementation(libs.compose.foundation)
-    implementation(libs.compose.runtime)
-    // 文件图标支持
-    implementation("androidx.compose.material:material-icons-extended:1.7.8")
-    // ActivityResult 上传/下载支持
-    implementation(libs.activity.compose)
-    implementation(libs.miuix.android)
-    implementation(libs.miuix.icons)
-    implementation(libs.miuix.preference)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

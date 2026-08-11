@@ -1,11 +1,14 @@
 package github.xzynine.webdav.ui
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
@@ -65,98 +68,115 @@ fun WebDavSyncStatusSection(
             "$statusText | ${state.cloudBindingSummary}"
         }
     }
-    ArrowPreference(
-        title = "备份状态",
-        summary = combinedBackupSummary,
-        startAction = {
-            Icon(
-                modifier = Modifier.padding(end = 16.dp),
-                imageVector = MiuixIcons.Backup,
-                contentDescription = "备份状态",
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        // 备份状态
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ArrowPreference(
+                title = "备份状态",
+                summary = combinedBackupSummary,
+                startAction = {
+                    Icon(
+                        modifier = Modifier.padding(end = 16.dp),
+                        imageVector = MiuixIcons.Backup,
+                        contentDescription = "备份状态",
+                    )
+                },
+                onClick = onCloudBindingClick,
+                modifier = Modifier
+                    .fillMaxWidth()
             )
-        },
-        onClick = onCloudBindingClick,
-        modifier = Modifier
-            .fillMaxWidth()
-    )
+        }
 
-    androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-    // 备份按钮
-    ArrowPreference(
-        title = if (state.isBackupInProgress) {
-            "备份中..."
-        } else if (state.isCloudBound) {
-            "备份令牌"
-        } else {
-            "绑定后可备份"
-        },
-        summary = if (state.isBackupInProgress) {
-            "正在备份到WebDAV服务器... ${state.backupProgress}%"
-        } else if (state.isCloudBound) {
-            "点击开始备份"
-        } else {
-            "当前库未绑定云端 .kdbx"
-        },
-        startAction = {
-            if (state.isBackupInProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.padding(end = 16.dp)
-                )
-            } else {
-                Icon(
-                    modifier = Modifier.padding(end = 16.dp),
-                    imageVector = MiuixIcons.UploadCloud,
-                    contentDescription = "备份令牌",
-                )
-            }
-        },
-        onClick = {
-            if (!state.isBackupInProgress && state.isCloudBound) {
-                onBackupClick()
-            }
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-    )
+        // 备份按钮
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ArrowPreference(
+                title = if (state.isBackupInProgress) {
+                    "备份中..."
+                } else if (state.isCloudBound) {
+                    "备份令牌"
+                } else {
+                    "绑定后可备份"
+                },
+                summary = if (state.isBackupInProgress) {
+                    "正在备份到WebDAV服务器... ${state.backupProgress}%"
+                } else if (state.isCloudBound) {
+                    "点击开始备份"
+                } else {
+                    "当前库未绑定云端 .kdbx"
+                },
+                startAction = {
+                    if (state.isBackupInProgress) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(end = 16.dp)
+                        )
+                    } else {
+                        Icon(
+                            modifier = Modifier.padding(end = 16.dp),
+                            imageVector = MiuixIcons.UploadCloud,
+                            contentDescription = "备份令牌",
+                        )
+                    }
+                },
+                onClick = {
+                    if (!state.isBackupInProgress && state.isCloudBound) {
+                        onBackupClick()
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+            )
+        }
 
-    androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-    // 手动恢复按钮
-    ArrowPreference(
-        title = if (state.isRestoreInProgress) {
-            "恢复中..."
-        } else if (state.isCloudBound) {
-            "手动恢复"
-        } else {
-            "绑定后可恢复"
-        },
-        summary = if (state.isRestoreInProgress) {
-            "正在从WebDAV服务器恢复... ${state.restoreProgress}%"
-        } else if (state.isCloudBound) {
-            "点击开始手动恢复"
-        } else {
-            "当前库未绑定云端 .kdbx"
-        },
-        startAction = {
-            if (state.isRestoreInProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.padding(end = 16.dp)
-                )
-            } else {
-                Icon(
-                    modifier = Modifier.padding(end = 16.dp),
-                    imageVector = MiuixIcons.Download,
-                    contentDescription = "手动恢复",
-                )
-            }
-        },
-        onClick = {
-            if (!state.isRestoreInProgress && state.isCloudBound) {
-                onRestoreClick()
-            }
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-    )
+        // 手动恢复按钮
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ArrowPreference(
+                title = if (state.isRestoreInProgress) {
+                    "恢复中..."
+                } else if (state.isCloudBound) {
+                    "手动恢复"
+                } else {
+                    "绑定后可恢复"
+                },
+                summary = if (state.isRestoreInProgress) {
+                    "正在从WebDAV服务器恢复... ${state.restoreProgress}%"
+                } else if (state.isCloudBound) {
+                    "点击开始手动恢复"
+                } else {
+                    "当前库未绑定云端 .kdbx"
+                },
+                startAction = {
+                    if (state.isRestoreInProgress) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(end = 16.dp)
+                        )
+                    } else {
+                        Icon(
+                            modifier = Modifier.padding(end = 16.dp),
+                            imageVector = MiuixIcons.Download,
+                            contentDescription = "手动恢复",
+                        )
+                    }
+                },
+                onClick = {
+                    if (!state.isRestoreInProgress && state.isCloudBound) {
+                        onRestoreClick()
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+            )
+        }
+    }
 }

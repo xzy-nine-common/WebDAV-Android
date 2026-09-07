@@ -90,7 +90,11 @@ open class WebDav(
             chain.proceed(request)
         }
         OkHttpClient.Builder().run {
+            // 总时长不限（大词库/慢网络），但每个阶段都要有上限，避免弱网下无限挂起
             callTimeout(0, TimeUnit.SECONDS)
+            connectTimeout(30, TimeUnit.SECONDS)
+            readTimeout(120, TimeUnit.SECONDS)
+            writeTimeout(120, TimeUnit.SECONDS)
             addInterceptor(authInterceptor)
             addNetworkInterceptor(authInterceptor)
             build()

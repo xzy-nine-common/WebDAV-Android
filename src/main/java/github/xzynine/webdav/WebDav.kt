@@ -96,6 +96,15 @@ open class WebDav(
             build()
         }
     }
+    /**
+     * 目标地址是否位于本地网络（局域网）。
+     *
+     * Android 17（SDK 37）起访问局域网默认被屏蔽，宿主应在访问前确认
+     * 已通过 [LocalNetworkPermission] 获得「本地网络」权限。
+     */
+    val isLocalNetworkTarget: Boolean
+        get() = LocalNetworkPermission.isLocalNetworkUrl(path)
+
     private val host: String?
         get() = url.host?.let {
             if (it.startsWith("[")) {

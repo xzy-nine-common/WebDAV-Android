@@ -81,6 +81,15 @@ enum class SyncFailureKind {
     FILE_NOT_FOUND,
 
     /**
+     * Android 17（SDK 37）起访问局域网需要「本地网络」权限，未授予或被撤销时触发。
+     *
+     * 未授予时系统不会返回明确错误：TCP 连接表现为超时，UDP 返回 EPERM，
+     * 因此引擎会在发起请求前主动检查，并在网络类失败时结合目标地址回判为该类型，
+     * 便于宿主提示用户授权而不是笼统提示"网络异常"。
+     */
+    LOCAL_NETWORK,
+
+    /**
      * 其他未知错误
      */
     UNKNOWN;
@@ -148,7 +157,28 @@ fun interface SyncMergeCallback {
  *
  * @param context 用于访问 content:// Uri 的上下文
  */
+/**
+ * 目标位于局域网但未获得「本地网络」权限时的统一提示文案。
+ */
+const val LOCAL_NETWORK_DENIED_MESSAGE: String =
+    "访问局域网中的 WebDAV 服务器需要「本地网络」权限（Android 17 起），请允许后再重试"
+
 class WebDavSyncEngine(private val context: Context) {
+
+    private val appContext: Context = context.applicationContext
+
+    /**
+     * 访问给定远端地址是否需要「本地网络」权限。
+     *
+     * Android 17（SDK 37）起，访问局域网地址默认被屏蔽；
+     * 宿主可在发起同步前调用本方法判断是否需要先引导用户授权。
+     *
+     * @param remotePath 远端文件完整地址
+     * @return true 表示目标位于局域网且尚未授权
+     */
+    fun requiresLocalNetworkPermission(remotePath: String?): Boolean {
+        return LocalNetworkPermission.needsRequest(appContext, remotePath)
+    }
 
     /**
      * 从远端下载并写入本地定位
@@ -166,6 +196,9 @@ class WebDavSyncEngine(private val context: Context) {
         localPath: String
     ): SyncOutcome {
         return withContext(Dispatchers.IO) {
+            // Android 17 起局域网访问被默认屏蔽，缺少权限时直接失败并给出可操作提示，
+            // 避免用户只看到"连接超时"却不知道需要授权。
+            localNetworkDeniedOutcome(remotePath)?.let { return@withContext it }
             runCatching {
                 val remote = WebDav(remotePath, Authorization(username, password))
                 if (!remote.exists()) {
@@ -187,7 +220,8 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = remoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
+                val (kind, message, absenceSource) =
+                    classifyFailureInternal(throwable, localPath, remotePath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -222,6 +256,7 @@ class WebDavSyncEngine(private val context: Context) {
         lastSyncAt: Long?
     ): SyncOutcome {
         return withContext(Dispatchers.IO) {
+            localNetworkDeniedOutcome(remotePath)?.let { return@withContext it }
             runCatching {
                 if (!localPathExists(localPath)) {
                     return@runCatching SyncOutcome(
@@ -286,7 +321,8 @@ class WebDavSyncEngine(private val context: Context) {
                     remoteModifiedAt = refreshedRemoteModified
                 )
             }.getOrElse { throwable ->
-                val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
+                val (kind, message, absenceSource) =
+                    classifyFailureInternal(throwable, localPath, remotePath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -315,12 +351,14 @@ class WebDavSyncEngine(private val context: Context) {
         contentType: String = "application/octet-stream"
     ): SyncOutcome {
         return withContext(Dispatchers.IO) {
+            localNetworkDeniedOutcome(remotePath)?.let { return@withContext it }
             runCatching {
                 val remote = WebDav(remotePath, Authorization(username, password))
                 remote.upload(bytes, contentType)
                 SyncOutcome(result = SyncResult.SUCCESS)
             }.getOrElse { throwable ->
-                val (kind, message, absenceSource) = classifyFailureInternal(throwable, null)
+                val (kind, message, absenceSource) =
+                    classifyFailureInternal(throwable, null, remotePath)
                 SyncOutcome(
                     result = SyncResult.FAILED,
                     errorKind = kind,
@@ -460,10 +498,16 @@ class WebDavSyncEngine(private val context: Context) {
      *
      * @param throwable 待归类的异常
      * @param localPath 本地定位（文件路径或 content:// Uri），用于权限类错误判定
+     * @param remotePath 远端地址，用于识别 Android 17 起的本地网络权限缺失
      * @return 失败结果
      */
-    fun classifyFailure(throwable: Throwable, localPath: String? = null): SyncOutcome {
-        val (kind, message, absenceSource) = classifyFailureInternal(throwable, localPath)
+    fun classifyFailure(
+        throwable: Throwable,
+        localPath: String? = null,
+        remotePath: String? = null
+    ): SyncOutcome {
+        val (kind, message, absenceSource) =
+            classifyFailureInternal(throwable, localPath, remotePath)
         return SyncOutcome(
             result = SyncResult.FAILED,
             errorKind = kind,
@@ -492,10 +536,12 @@ class WebDavSyncEngine(private val context: Context) {
      */
     private fun classifyFailureInternal(
         throwable: Throwable,
-        localPath: String?
+        localPath: String?,
+        remotePath: String? = null
     ): Triple<SyncFailureKind, String?, FileAbsenceSource> {
         val isUriPath = !localPath.isNullOrBlank() && asContentUri(localPath) != null
         val kind = when {
+            isLocalNetworkDenied(throwable, remotePath) -> SyncFailureKind.LOCAL_NETWORK
             isUriPath && isPermissionIssue(throwable) -> SyncFailureKind.PERMISSION
             else -> SyncFailureKind.of(throwable)
         }
@@ -504,6 +550,39 @@ class WebDavSyncEngine(private val context: Context) {
         } else {
             FileAbsenceSource.NONE
         }
-        return Triple(kind, throwable.message, absenceSource)
+        val message = if (kind == SyncFailureKind.LOCAL_NETWORK) {
+            LOCAL_NETWORK_DENIED_MESSAGE
+        } else {
+            throwable.message
+        }
+        return Triple(kind, message, absenceSource)
+    }
+
+    /**
+     * 发起请求前的本地网络权限检查：目标位于局域网且尚未授权时返回失败结果
+     */
+    private fun localNetworkDeniedOutcome(remotePath: String?): SyncOutcome? {
+        if (!LocalNetworkPermission.needsRequest(appContext, remotePath)) return null
+        return SyncOutcome(
+            result = SyncResult.FAILED,
+            errorKind = SyncFailureKind.LOCAL_NETWORK,
+            errorMessage = LOCAL_NETWORK_DENIED_MESSAGE
+        )
+    }
+
+    /**
+     * 判断失败是否由缺少「本地网络」权限导致。
+     *
+     * 未授权时系统不会给出明确错误：TCP 表现为超时、UDP 返回 EPERM，
+     * 因此这里结合"目标是局域网地址 + 未授权 + 网络类异常/权限类异常"综合判定。
+     */
+    private fun isLocalNetworkDenied(throwable: Throwable, remotePath: String?): Boolean {
+        if (!LocalNetworkPermission.isLocalNetworkUrl(remotePath)) return false
+        if (LocalNetworkPermission.isGranted(appContext)) return false
+        val text = flattenThrowableMessage(throwable)
+        return throwable is SecurityException ||
+            SyncFailureKind.of(throwable) == SyncFailureKind.NETWORK ||
+            text.contains("EPERM", ignoreCase = true) ||
+            text.contains("permission", ignoreCase = true)
     }
 }

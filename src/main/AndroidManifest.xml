@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        Android 17（SDK 37）本地网络访问限制（Local Network Protection）：
+        自 SDK 37 起，访问局域网（如家庭/内网中的 WebDAV 服务器）默认被屏蔽，
+        必须声明并在运行时请求 ACCESS_LOCAL_NETWORK 权限，否则 TCP 连接只会超时、
+        UDP 返回 EPERM，表现为"连不上"却没有明确错误。
+
+        注意（拆分权限模型）：该权限仅在以 SDK 37 或更高版本为目标平台时才需要；
+        目标 SDK < 37 的应用凭 INTERNET 权限隐式获得本地网络访问权，
+        此时既不应声明也不应请求该权限。若宿主应用目标 SDK 低于 37，
+        请在本库之外移除该声明。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
 </manifest>

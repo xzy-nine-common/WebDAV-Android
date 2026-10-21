@@ -66,6 +66,19 @@ open class WebDav(
             </propfind>"""
 
         private const val DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+        /**
+         * 共享底层客户端：所有 WebDav 实例通过 newBuilder 复用连接池与 TLS 会话，
+         * 超时配置对全部实例一致。
+         */
+        private val baseClient: OkHttpClient = OkHttpClient.Builder().run {
+            // 总时长不限（大词库/慢网络），但每个阶段都要有上限，避免弱网下无限挂起
+            callTimeout(0, TimeUnit.SECONDS)
+            connectTimeout(30, TimeUnit.SECONDS)
+            readTimeout(120, TimeUnit.SECONDS)
+            writeTimeout(120, TimeUnit.SECONDS)
+            build()
+        }
     }
 
 
@@ -78,7 +91,7 @@ open class WebDav(
             raw.toHttpUrl().toString()
         }.getOrNull()
     }
-    private val webDavClient by lazy {
+    private val webDavClient: OkHttpClient by lazy {
         val authInterceptor = Interceptor { chain ->
             var request = chain.request()
             if (request.url.host.equals(host, true)) {
@@ -89,16 +102,10 @@ open class WebDav(
             }
             chain.proceed(request)
         }
-        OkHttpClient.Builder().run {
-            // 总时长不限（大词库/慢网络），但每个阶段都要有上限，避免弱网下无限挂起
-            callTimeout(0, TimeUnit.SECONDS)
-            connectTimeout(30, TimeUnit.SECONDS)
-            readTimeout(120, TimeUnit.SECONDS)
-            writeTimeout(120, TimeUnit.SECONDS)
-            addInterceptor(authInterceptor)
-            addNetworkInterceptor(authInterceptor)
-            build()
-        }
+        baseClient.newBuilder()
+            .addInterceptor(authInterceptor)
+            .addNetworkInterceptor(authInterceptor)
+            .build()
     }
     /**
      * 目标地址是否位于本地网络（局域网）。
@@ -120,7 +127,8 @@ open class WebDav(
 
     @Throws(WebDavException::class)
     suspend fun getWebDavFile(): WebDavFile? {
-        return propFindResponse(depth = 0)?.let {
+        // 404 视为远端文件不存在，返回 null 供调用方按远端缺失处理
+        return propFindResponse(depth = 0, nullOn404 = true)?.let {
             parseBody(it).firstOrNull()
         }
     }
@@ -138,7 +146,8 @@ open class WebDav(
     @Throws(WebDavException::class)
     private suspend fun propFindResponse(
         propsList: List<String> = emptyList(),
-        depth: Int = 1
+        depth: Int = 1,
+        nullOn404: Boolean = false,
     ): String? {
         val requestProps = StringBuilder()
         for (p in propsList) {
@@ -155,9 +164,14 @@ open class WebDav(
             addHeader("Depth", depth.toString())
             val requestBody = requestPropsStr.toRequestBody("text/plain".toMediaType())
             method("PROPFIND", requestBody)
-        }.apply {
-            checkResult(this)
-        }.body?.text()
+        }.use { response ->
+            if (response.code == 404 && nullOn404) {
+                null
+            } else {
+                checkResult(response)
+                response.body.text()
+            }
+        }
     }
 
     private fun parseBody(s: String): List<WebDavFile> {
@@ -222,15 +236,36 @@ open class WebDav(
         return list
     }
 
-    suspend fun exists(): Boolean {
+    /**
+     * 判断远端资源是否存在。
+     * 404 或 ObjectNotFound 返回 false；网络异常与其他服务器错误直接抛出，由调用方分类处理。
+     */
+    @Throws(WebDavException::class)
+    suspend fun existsOrThrow(): Boolean {
         val url = httpUrl ?: return false
+        return webDavClient.newCallResponse {
+            url(url)
+            addHeader("Depth", "0")
+            val requestBody = EXISTS.toRequestBody("application/xml".toMediaType())
+            method("PROPFIND", requestBody)
+        }.use { response ->
+            when {
+                response.isSuccessful -> true
+                response.code == 404 -> false
+                else -> {
+                    val body = response.body.string()
+                    val objectNotFound = Jsoup.parse(body.orEmpty())
+                        .getElementsByTag("s:exception")
+                        .firstOrNull()?.text() == "ObjectNotFound"
+                    if (objectNotFound) false else throwExceptionFor(response, body)
+                }
+            }
+        }
+    }
+
+    suspend fun exists(): Boolean {
         return kotlin.runCatching {
-            return webDavClient.newCallResponse {
-                url(url)
-                addHeader("Depth", "0")
-                val requestBody = EXISTS.toRequestBody("application/xml".toMediaType())
-                method("PROPFIND", requestBody)
-            }.use { it.isSuccessful }
+            existsOrThrow()
         }.onFailure {
             coroutineContext.ensureActive()
         }.getOrDefault(false)
@@ -372,29 +407,35 @@ open class WebDav(
 
     private fun checkResult(response: Response) {
         if (!response.isSuccessful) {
-            val body = response.body?.string()
-            if (response.code == 401) {
-                val headers = response.headers("WWW-Authenticate")
-                val supportBasicAuth = headers.any {
-                    it.startsWith("Basic", ignoreCase = true)
-                }
-                if (headers.isNotEmpty() && !supportBasicAuth) {
-                    // 预留：非 Basic 认证时的处理
-                }
-            }
-
-            if (response.message.isNotBlank() || body.isNullOrBlank()) {
-                throw WebDavException("${url}\n${response.code}:${response.message}")
-            }
-            val document = Jsoup.parse(body)
-            val exception = document.getElementsByTag("s:exception").firstOrNull()?.text()
-            val message = document.getElementsByTag("s:message").firstOrNull()?.text()
-            if (exception == "ObjectNotFound") {
-                throw ObjectNotFoundException(
-                    message ?: "$path doesn't exist. code:${response.code}"
-                )
-            }
-            throw WebDavException(message ?: "未知错误 code:${response.code}")
+            throwExceptionFor(response, response.body.string())
         }
+    }
+
+    private fun throwExceptionFor(
+        response: Response,
+        body: String?,
+    ): Nothing {
+        if (response.code == 401) {
+            val headers = response.headers("WWW-Authenticate")
+            val supportBasicAuth = headers.any {
+                it.startsWith("Basic", ignoreCase = true)
+            }
+            if (headers.isNotEmpty() && !supportBasicAuth) {
+                // 预留：非 Basic 认证时的处理
+            }
+        }
+
+        if (response.message.isNotBlank() || body.isNullOrBlank()) {
+            throw WebDavException("${url}\n${response.code}:${response.message}")
+        }
+        val document = Jsoup.parse(body)
+        val exception = document.getElementsByTag("s:exception").firstOrNull()?.text()
+        val message = document.getElementsByTag("s:message").firstOrNull()?.text()
+        if (exception == "ObjectNotFound") {
+            throw ObjectNotFoundException(
+                message ?: "$path doesn't exist. code:${response.code}"
+            )
+        }
+        throw WebDavException(message ?: "未知错误 code:${response.code}")
     }
 }

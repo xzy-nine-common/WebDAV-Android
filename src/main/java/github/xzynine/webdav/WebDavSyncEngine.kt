@@ -118,13 +118,16 @@ enum class SyncFailureKind {
  * @param errorMessage 原始错误信息
  * @param absenceSource 文件缺失来源（仅 FILE_NOT_FOUND 时有效）
  * @param remoteModifiedAt 远端文件修改时间
+ * @param localBytesReplaced 本次操作用远端字节直接覆盖了本地文件，
+ * 宿主需据此失效自身的内存数据库缓存，避免缓存与磁盘脱节
  */
 data class SyncOutcome(
     val result: SyncResult,
     val errorKind: SyncFailureKind = SyncFailureKind.UNKNOWN,
     val errorMessage: String? = null,
     val absenceSource: FileAbsenceSource = FileAbsenceSource.NONE,
-    val remoteModifiedAt: Long? = null
+    val remoteModifiedAt: Long? = null,
+    val localBytesReplaced: Boolean = false
 ) {
     /**
      * 是否成功（含合并成功）
@@ -201,7 +204,8 @@ class WebDavSyncEngine(private val context: Context) {
             localNetworkDeniedOutcome(remotePath)?.let { return@withContext it }
             runCatching {
                 val remote = WebDav(remotePath, Authorization(username, password))
-                if (!remote.exists()) {
+                // 网络异常直接抛出交由下方分类，404 才按远端缺失处理
+                if (!remote.existsOrThrow()) {
                     return@runCatching SyncOutcome(
                         result = SyncResult.FAILED,
                         errorKind = SyncFailureKind.FILE_NOT_FOUND,
@@ -217,7 +221,8 @@ class WebDavSyncEngine(private val context: Context) {
 
                 SyncOutcome(
                     result = SyncResult.SUCCESS,
-                    remoteModifiedAt = remoteModified
+                    remoteModifiedAt = remoteModified,
+                    localBytesReplaced = true
                 )
             }.getOrElse { throwable ->
                 val (kind, message, absenceSource) =
@@ -286,10 +291,12 @@ class WebDavSyncEngine(private val context: Context) {
                 if (remoteChangedAfterSync) {
                     // 远端有变更，拉取后按本地是否变更决定合并或覆盖
                     val remoteBytes = remote.download()
+                    var localReplaced = false
                     val merged = if (localChangedAfterSync) {
                         merge.merge(localPath, masterPassword, remoteBytes)
                     } else {
                         writeBytesToLocalPath(localPath, remoteBytes)
+                        localReplaced = true
                         true
                     }
 
@@ -298,6 +305,15 @@ class WebDavSyncEngine(private val context: Context) {
                             result = SyncResult.CONFLICT,
                             errorMessage = "自动合并失败，请先手动恢复后再同步",
                             remoteModifiedAt = remoteModified
+                        )
+                    }
+
+                    if (localReplaced) {
+                        // 远端字节已直接落盘，通知宿主失效内存缓存
+                        return@runCatching SyncOutcome(
+                            result = SyncResult.SUCCESS,
+                            remoteModifiedAt = remoteModified,
+                            localBytesReplaced = true
                         )
                     }
                 }
@@ -396,6 +412,9 @@ class WebDavSyncEngine(private val context: Context) {
 
     /**
      * 写入本地定位（文件路径或 Uri）
+     *
+     * 文件路径分支先写临时文件再原子替换，避免写入中断损坏原库；
+     * Uri 分支受 SAF 限制无法原子替换，直接写入。
      */
     private fun writeBytesToLocalPath(localPath: String, bytes: ByteArray) {
         val uri = asContentUri(localPath)
@@ -415,7 +434,17 @@ class WebDavSyncEngine(private val context: Context) {
                 it.mkdirs()
             }
         }
-        localFile.writeBytes(bytes)
+        val tempFile = File(localFile.parentFile, localFile.name + ".sync.tmp")
+        try {
+            tempFile.writeBytes(bytes)
+            // 同目录 rename 原子替换；跨卷等异常时回退整文件复制
+            if (!tempFile.renameTo(localFile)) {
+                tempFile.copyTo(localFile, overwrite = true)
+                tempFile.delete()
+            }
+        } finally {
+            runCatching { tempFile.delete() }
+        }
     }
 
     /**
@@ -465,6 +494,25 @@ class WebDavSyncEngine(private val context: Context) {
             return null
         }
         return localFile.lastModified().takeIf { it > 0L }
+    }
+
+    /**
+     * 判断本地定位自上次同步完成后是否有未同步的修改
+     *
+     * content:// 定位修改时间不可靠，恒视为已修改（由调用方走合并路径兜底）。
+     *
+     * @param localPath 本地定位（文件路径或 content:// Uri）
+     * @param lastSyncAt 最近一次同步完成时间戳，null 表示从未同步
+     */
+    fun isLocalChangedSinceSync(localPath: String, lastSyncAt: Long?): Boolean {
+        if (asContentUri(localPath) != null) {
+            return true
+        }
+        if (lastSyncAt == null) {
+            return true
+        }
+        val localModifiedAt = getLocalPathLastModified(localPath)
+        return (localModifiedAt ?: Long.MAX_VALUE) > lastSyncAt
     }
 
     /**
